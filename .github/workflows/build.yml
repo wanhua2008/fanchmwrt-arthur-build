@@ -23,6 +23,7 @@ on:
     paths:
       - '.github/workflows/build.yml'
       - 'configs/**'
+      - 'package/**'
 
 env:
   REPO_URL: https://github.com/fanchmwrt/fanchmwrt-snapshot
