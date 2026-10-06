@@ -191,17 +191,55 @@ jobs:
       - name: Download package sources
         run: |
           cd openwrt
-          make download -j8 V=s 2>&1 | tail -30
-          # 下载失败重试一次
-          find dl -size -1024c -exec rm -f {} \; 2>/dev/null || true
-          make download -j8 V=s 2>&1 | tail -10
+          set -o pipefail
+          echo "=== 第一轮下载 (-j8) ==="
+          if ! make download -j8 2>&1 | tee download.log | tail -30; then
+            echo "[WARN] 第一轮下载有失败项，清理残缺文件后单线程重试"
+            find dl -size -1024c -exec rm -f {} \; 2>/dev/null || true
+            echo "=== 第二轮下载 (-j1 V=s，错误可见) ==="
+            make download -j1 V=s 2>&1 | tee -a download.log | tail -40
+          fi
+
+      - name: Fail-fast: targeted compile of fwx-apps
+        run: |
+          cd openwrt
+          set -o pipefail
+          echo "=== 注入的包内容抽查 ==="
+          find package/fwx-apps -type f | head -20
+          echo "=== fwx-apps apk 缓存数量（应为 11） ==="
+          find package/fwx-apps -name '*.apk' | wc -l
+          echo "=== 定向编译 fwx-apps（会先带出 tools/toolchain 构建）$(date) ==="
+          make package/fwx-apps/compile V=s 2>&1 | tee custom-pkg.log | tail -60
+          echo "=== fwx-apps 编译通过 $(date) ==="
 
       - name: Compile firmware
         run: |
           cd openwrt
+          set -o pipefail
           echo "=== 开始编译 $(date) ==="
-          make -j$(nproc) V=s 2>&1 | tail -120
+          make -j$(nproc) V=s 2>&1 | tee build.log | tail -120
           echo "=== 编译结束 $(date) ==="
+
+      - name: Gzip logs for upload
+        if: failure()
+        run: |
+          cd openwrt
+          for f in custom-pkg.log download.log build.log; do
+            if [ -f "$f" ]; then gzip -f "$f"; fi
+          done
+          ls -la *.log* 2>/dev/null || true
+
+      - name: Upload build logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            openwrt/custom-pkg.log.gz
+            openwrt/download.log.gz
+            openwrt/build.log.gz
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Show build result
         if: always()
