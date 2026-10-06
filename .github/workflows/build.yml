@@ -132,7 +132,6 @@ jobs:
             sed -i "/^CONFIG_PACKAGE_${opt}=/d" .config
             sed -i "/^# CONFIG_PACKAGE_${opt} is not set/d" .config
           done
-          sed -i '/^CONFIG_VERSION_NUMBER=/d' .config
           {
             echo ""
             echo "# ===== NTFS / exFAT 支持 (本次编译的核心目的) ====="
@@ -146,8 +145,6 @@ jobs:
             echo "CONFIG_PACKAGE_luci-app-fwx-app-center=y"
             echo "CONFIG_PACKAGE_luci-app-fwx-resources=y"
             echo "CONFIG_PACKAGE_fwx-apps=y"
-            echo "# ===== 固件版本标识 (云端应用中心只认正式版号) ====="
-            echo 'CONFIG_VERSION_NUMBER="25.12.4"'
           } >> .config
 
           echo "=== 步骤3: 再次 defconfig 解析依赖 ==="
@@ -168,14 +165,6 @@ jobs:
               FAIL=1
             fi
           done
-
-          echo "=== 版本标识校验 ==="
-          if grep -q '^CONFIG_VERSION_NUMBER="25.12.4"' .config; then
-            echo '  [OK] CONFIG_VERSION_NUMBER="25.12.4"'
-          else
-            echo "  [FAIL] 版本号未生效"
-            FAIL=1
-          fi
 
           echo "=== 目标设备校验 ==="
           grep -E 'CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=' .config || echo "  [FAIL] 设备 profile 未选中"

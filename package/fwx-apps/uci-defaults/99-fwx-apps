@@ -5,6 +5,10 @@
 # 确保 init.sh 有执行位（git 在 Windows 上会丢失 executable bit）
 chmod 755 /fwx_data/app_list/*/init.sh /fwx_root/usr/bin/user_sessiond 2>/dev/null
 
+# 应用中心云端按固件版本号下发资源，SNAPSHOT 会返回 40004"无可用插件"，
+# 对齐官方正式版系列号 25.12.4（原文件保留动态 revision 不动）
+sed -i "s/DISTRIB_RELEASE='SNAPSHOT'/DISTRIB_RELEASE='25.12.4'/; s/OpenWrt SNAPSHOT/OpenWrt 25.12.4/" /etc/openwrt_release
+
 # 注册全部预置应用（含中文翻译包），失败不阻塞开机
 apk add --allow-untrusted /fwx_data/app_list/*/luci-apps/*.apk >/dev/null 2>&1
 
