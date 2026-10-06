@@ -1,5 +1,5 @@
 # 编译产物与临时文件
-bin/
+/bin/
 build_dir/
 dl/
 staging_dir/

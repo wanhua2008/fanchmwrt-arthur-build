@@ -1,0 +1,16 @@
+#!/bin/sh
+# 首次开机：把预置的 fwx 应用注册进 apk 数据库，并固化应用自启钩子。
+# 幂等设计：apk add 对已安装包自动跳过；rc.local 钩子先查重。
+
+# 确保 init.sh 有执行位（git 在 Windows 上会丢失 executable bit）
+chmod 755 /fwx_data/app_list/*/init.sh /fwx_root/usr/bin/user_sessiond 2>/dev/null
+
+# 注册全部预置应用（含中文翻译包），失败不阻塞开机
+apk add --allow-untrusted /fwx_data/app_list/*/luci-apps/*.apk >/dev/null 2>&1
+
+# 应用自启：fwx_app_init 会扫描 /fwx_data/app_list/*/init.sh start
+if [ -f /etc/rc.local ] && ! grep -q fwx_app_init /etc/rc.local; then
+	sed -i '/^exit 0/i /usr/bin/fwx_app_init >/dev/null 2>&1' /etc/rc.local
+fi
+
+exit 0

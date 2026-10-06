@@ -83,7 +83,7 @@ jobs:
           cd openwrt
           ./scripts/feeds install -a
 
-      - name: Inject custom packages (arthur-nas)
+      - name: Inject custom packages (arthur-nas + fwx app center + fwx-apps)
         run: |
           # 把本仓库里的自定义包链接进源码树
           SRC="$GITHUB_WORKSPACE/build-config/package"
@@ -105,15 +105,17 @@ jobs:
 
           # 验证包被 OpenWrt 识别
           cd openwrt
-          echo "=== 校验 arthur-nas 包定义 ==="
+          echo "=== 校验自定义包定义 ==="
           make defconfig >/dev/null 2>&1 || true
-          if grep -q 'CONFIG_PACKAGE_arthur-nas' .config; then
-            echo "  [OK] arthur-nas 已被构建系统识别"
-          else
-            echo "  [WARN] arthur-nas 未被识别，请检查 Makefile"
-          fi
-          echo "=== arthur-nas 相关配置 ==="
-          grep -E 'arthur-nas' .config || echo "  (无)"
+          for p in arthur-nas luci-app-fwx-app-center luci-app-fwx-resources fwx-apps; do
+            if grep -q "CONFIG_PACKAGE_${p}" .config; then
+              echo "  [OK] $p 已被构建系统识别"
+            else
+              echo "  [WARN] $p 未被识别，请检查 Makefile"
+            fi
+          done
+          echo "=== 自定义包相关配置 ==="
+          grep -E 'arthur-nas|fwx' .config || echo "  (无)"
 
       - name: Apply custom config
         run: |
@@ -123,12 +125,14 @@ jobs:
           echo "=== 步骤1: 生成基础配置 (defconfig) ==="
           make defconfig
 
-          echo "=== 步骤2: 强制注入 NTFS/exFAT 选项 ==="
+          echo "=== 步骤2: 强制注入 NTFS/exFAT + NAS + fwx 应用中心选项 ==="
           # 用 sed 先删除可能存在的旧行，避免重复
-          for opt in kmod-fs-ntfs3 kmod-fs-exfat kmod-nls-utf8 kmod-nls-cp936 arthur-nas; do
+          for opt in kmod-fs-ntfs3 kmod-fs-exfat kmod-nls-utf8 kmod-nls-cp936 arthur-nas \
+                     luci-app-fwx-app-center luci-app-fwx-resources fwx-apps; do
             sed -i "/^CONFIG_PACKAGE_${opt}=/d" .config
             sed -i "/^# CONFIG_PACKAGE_${opt} is not set/d" .config
           done
+          sed -i '/^CONFIG_VERSION_NUMBER=/d' .config
           {
             echo ""
             echo "# ===== NTFS / exFAT 支持 (本次编译的核心目的) ====="
@@ -138,6 +142,12 @@ jobs:
             echo "CONFIG_PACKAGE_kmod-nls-cp936=y"
             echo "# ===== NAS 套件 ====="
             echo "CONFIG_PACKAGE_arthur-nas=y"
+            echo "# ===== fwx 应用中心 + 预置应用 ====="
+            echo "CONFIG_PACKAGE_luci-app-fwx-app-center=y"
+            echo "CONFIG_PACKAGE_luci-app-fwx-resources=y"
+            echo "CONFIG_PACKAGE_fwx-apps=y"
+            echo "# ===== 固件版本标识 (云端应用中心只认正式版号) ====="
+            echo 'CONFIG_VERSION_NUMBER="25.12.4"'
           } >> .config
 
           echo "=== 步骤3: 再次 defconfig 解析依赖 ==="
@@ -147,6 +157,9 @@ jobs:
           FAIL=0
           for opt in CONFIG_PACKAGE_kmod-fs-ntfs3 CONFIG_PACKAGE_kmod-fs-exfat \
                      CONFIG_PACKAGE_kmod-nls-utf8 CONFIG_PACKAGE_arthur-nas \
+                     CONFIG_PACKAGE_luci-app-fwx-app-center \
+                     CONFIG_PACKAGE_luci-app-fwx-resources \
+                     CONFIG_PACKAGE_fwx-apps \
                      CONFIG_PACKAGE_samba4-server; do
             if grep -q "^${opt}=y" .config; then
               echo "  [OK] ${opt}=y"
@@ -155,6 +168,14 @@ jobs:
               FAIL=1
             fi
           done
+
+          echo "=== 版本标识校验 ==="
+          if grep -q '^CONFIG_VERSION_NUMBER="25.12.4"' .config; then
+            echo '  [OK] CONFIG_VERSION_NUMBER="25.12.4"'
+          else
+            echo "  [FAIL] 版本号未生效"
+            FAIL=1
+          fi
 
           echo "=== 目标设备校验 ==="
           grep -E 'CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=' .config || echo "  [FAIL] 设备 profile 未选中"
@@ -201,6 +222,8 @@ jobs:
           find bin/targets -type f \( -name '*.bin' -o -name '*.itb' -o -name '*.img*' \) 2>/dev/null || true
           echo "=== 生成的 kmod 包 ==="
           find bin -name 'kmod-fs-ntfs3*' -o -name 'kmod-fs-exfat*' -o -name 'arthur-nas*' 2>/dev/null || true
+          echo "=== fwx 应用中心与预置应用包 ==="
+          find bin -name 'luci-app-fwx-app-center*' -o -name 'luci-app-fwx-resources*' -o -name 'fwx-apps*' 2>/dev/null || true
 
       - name: Upload firmware
         if: success()
