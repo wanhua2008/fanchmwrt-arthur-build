@@ -200,7 +200,7 @@ jobs:
             make download -j1 V=s 2>&1 | tee -a download.log | tail -40
           fi
 
-      - name: Fail-fast: targeted compile of fwx-apps
+      - name: "Fail-fast: targeted compile of fwx-apps"
         run: |
           cd openwrt
           set -o pipefail
