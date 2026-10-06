@@ -18,7 +18,12 @@ define Package/fwx-apps
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=FanchmWrt app center applications (pre-cached)
-  DEPENDS:=
+  # 包内 user_sessiond(ELF) + fwx_user.ko 的依赖必须显式声明，
+  # 否则 apk 打包时的依赖扫描器直接拒绝：
+  #   libubox/libubus/libuci/libblobmsg-json/libfwx_common (user_sessiond)
+  #   nf_conntrack.ko (fwx_user.ko)
+  DEPENDS:=+libubox +libubus +libuci +libblobmsg-json \
+           +kmod-nf-conntrack +libfwx_common
   PKGARCH:=all
 endef
 
