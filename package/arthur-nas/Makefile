@@ -56,6 +56,8 @@ define Package/arthur-nas/install
 
 	# ---- 热插拔钩子 ----
 	$(INSTALL_BIN) ./src/hotplug/20-usb-mount     $(1)/etc/hotplug.d/block/
+	$(INSTALL_DIR) $(1)/etc/hotplug.d/iface
+	$(INSTALL_BIN) ./src/hotplug/99-samba-rebind  $(1)/etc/hotplug.d/iface/
 
 	# ---- LuCI 界面 ----
 	$(INSTALL_DATA) ./src/luci-controller/arthur_nas.lua \

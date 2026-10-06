@@ -1,0 +1,6 @@
+#!/bin/sh
+# lan 接口 up 时延迟重启 samba4, 防止 smbd 绑定到启动早期的默认 IP
+# (保留配置刷机后实测: boot 早期 br-lan 短暂为 192.168.1.1, smbd 绑死旧 IP,
+#  导致 445 监听在错误地址; ifup lan 后延迟重启即可恢复绑定 192.168.5.1)
+[ "$ACTION" = ifup ] && [ "$INTERFACE" = lan ] || exit 0
+( sleep 3; /etc/init.d/samba4 restart >/dev/null 2>&1 ) &
