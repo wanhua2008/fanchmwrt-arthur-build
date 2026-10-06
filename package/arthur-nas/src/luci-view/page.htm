@@ -1,0 +1,119 @@
+<%+header%>
+<h2>亚瑟 NAS 共享</h2>
+<p>共享地址 <code>\\192.168.5.1\share</code>（匿名可读写） · 挂载点 <code>/mnt/mmcblk0p27</code> · LuCI 路径：服务 → 网络共享</p>
+
+<div class="cbi-map">
+	<div class="cbi-section">
+		<div class="cbi-section-node table width100">
+			<table class="table" style="width:100%">
+				<tr><td style="width:30%">eMMC 数据分区 (/dev/mmcblk0p27)</td><td id="st_part">检测中…</td></tr>
+				<tr><td>挂载状态 (/mnt/mmcblk0p27)</td><td id="st_mount">检测中…</td></tr>
+				<tr><td>共享容量 / 可用</td><td id="st_size">-</td></tr>
+				<tr><td>Samba 服务 (smbd)</td><td id="st_smb">检测中…</td></tr>
+				<tr><td>USB/SD 自动挂载</td><td id="st_usbauto">检测中…</td></tr>
+				<tr><td>集客AC 控制器</td><td id="st_gecoos">检测中…</td></tr>
+				<tr><td>Windows / 手机访问</td><td>资源管理器打开 <code>\\192.168.5.1\share</code>，或 smb://192.168.5.1/share</td></tr>
+			</table>
+		</div>
+	</div>
+
+	<div class="cbi-section" style="margin-top:12px">
+		<h3 style="margin:6px 0">USB / SD 卡</h3>
+		<div class="cbi-section-node table width100">
+			<table class="table" style="width:100%">
+				<thead><tr><th>设备</th><th>挂载点</th><th>Samba 共享</th></tr></thead>
+				<tbody id="usb_list"><tr><td colspan="3" style="color:#888">未检测到 USB/SD 设备（插上后会自动挂载并共享）</td></tr></tbody>
+			</table>
+		</div>
+	</div>
+
+	<div style="margin:8px 0">
+		<input type="button" class="cbi-button cbi-button-apply" value="一键安装 / 修复" onclick="doSetup()" />
+		<input type="button" class="cbi-button" value="重启共享服务" onclick="doRestart()" />
+		<input type="button" class="cbi-button" value="刷新状态" onclick="loadStatus()" />
+		<span id="jobhint" style="margin-left:8px;color:#c60;display:none">脚本执行中，请勿断电…</span>
+	</div>
+
+	<pre id="logbox" style="display:none;background:#f7f7f7;border:1px solid #ddd;padding:8px;max-height:320px;overflow:auto;font-size:12px;white-space:pre-wrap"></pre>
+</div>
+
+<script type="text/javascript">
+	function fmtGB(mb) {
+		return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : mb + ' MB';
+	}
+
+	function render(st) {
+		document.getElementById('st_part').innerHTML = st.part
+			? '<span style="color:green">✓ 已创建</span>'
+			: '<span style="color:#c00">✗ 不存在（一键安装可自动创建）</span>';
+		document.getElementById('st_mount').innerHTML = st.mount
+			? '<span style="color:green">✓ 已挂载</span>'
+			: '<span style="color:#c00">✗ 未挂载</span>';
+		document.getElementById('st_size').textContent =
+			st.size > 0 ? (fmtGB(st.size) + ' / ' + fmtGB(st.avail)) : '-';
+		document.getElementById('st_smb').innerHTML = st.smb
+			? '<span style="color:green">✓ 运行中</span>'
+			: '<span style="color:#c00">✗ 未运行</span>';
+		document.getElementById('st_usbauto').innerHTML = st.usbauto
+			? '<span style="color:green">✓ 已启用</span>'
+			: '<span style="color:#c00">✗ 未安装</span>';
+		document.getElementById('st_gecoos').innerHTML = st.gecoos
+			? '<span style="color:green">✓ 运行中</span>'
+			: '<span style="color:#888">未启用</span>';
+		document.getElementById('jobhint').style.display = st.job ? 'inline' : 'none';
+
+		var tb = document.getElementById('usb_list');
+		if (st.usb && st.usb.length > 0) {
+			var rows = '';
+			for (var i = 0; i < st.usb.length; i++) {
+				var u = st.usb[i];
+				rows += '<tr><td>' + u.name + '</td><td><code>' + u.mnt + '</code></td>'
+					+ '<td><code>\\\\192.168.5.1\\usb_' + u.name + '</code></td></tr>';
+			}
+			tb.innerHTML = rows;
+		} else {
+			tb.innerHTML = '<tr><td colspan="3" style="color:#888">未检测到 USB/SD 设备（插上后会自动挂载并共享）</td></tr>';
+		}
+	}
+
+	function loadStatus() {
+		new XHR().get('<%=url("admin/services/arthur_nas/status")%>', {}, function(x, j) {
+			if (j) render(j);
+		});
+	}
+
+	function pollLog() {
+		new XHR().get('<%=url("admin/services/arthur_nas/log")%>', {}, function(x, j) {
+			if (!j) return;
+			var box = document.getElementById('logbox');
+			box.style.display = 'block';
+			box.textContent = j.log;
+			box.scrollTop = box.scrollHeight;
+			if (j.running) {
+				setTimeout(pollLog, 2000);
+			} else {
+				document.getElementById('jobhint').style.display = 'none';
+				loadStatus();
+			}
+		});
+	}
+
+	function doSetup() {
+		if (!confirm('确定执行一键安装/修复？已配置的内容不会丢失。')) return;
+		document.getElementById('logbox').style.display = 'block';
+		document.getElementById('logbox').textContent = '开始执行…';
+		document.getElementById('jobhint').style.display = 'inline';
+		new XHR().post('<%=url("admin/services/arthur_nas/setup")%>', {}, function() {
+			pollLog();
+		});
+	}
+
+	function doRestart() {
+		new XHR().post('<%=url("admin/services/arthur_nas/restart")%>', {}, function() {
+			setTimeout(loadStatus, 1500);
+		});
+	}
+
+	loadStatus();
+</script>
+<%+footer%>

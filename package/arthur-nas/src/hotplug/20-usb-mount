@@ -1,0 +1,6 @@
+#!/bin/sh
+# 热插拔触发: 块设备增删时调用自动挂载脚本
+# 由 usb-automount-setup.sh 安装到 /etc/hotplug.d/block/20-usb-mount
+[ "$ACTION" = "add" -o "$ACTION" = "remove" ] || exit 0
+[ -n "$DEVNAME" ] || exit 0
+exec /usr/lib/arthur-nas/usb-automount.sh "$ACTION" "$DEVNAME"

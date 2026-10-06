@@ -1,0 +1,230 @@
+# ============================================================
+# 亚瑟 AX1800 Pro (jdcloud_re-ss-01) 自定义固件编译
+# 基于 FanchmWrt snapshot (fanchmwrt-26.05)
+#
+# 相比官方固件的改动：启用 NTFS / exFAT 支持
+#   + kmod-fs-ntfs3   (内核原生 NTFS 读写驱动)
+#   + kmod-fs-exfat   (exFAT 支持)
+#   + kmod-nls-utf8   (中文文件名)
+#
+# 并固化 NAS 共享套件：
+#   + arthur-nas      (开机自动挂载 eMMC + Samba 共享 + LuCI 页面)
+#
+# 触发方式：仓库 Actions 页面手动 Run workflow
+# 产物：Actions 页面 Artifacts 里的固件包
+# ============================================================
+
+name: Build FanchmWrt for JDCloud RE-SS-01 (NTFS enabled)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/build.yml'
+      - 'configs/**'
+
+env:
+  REPO_URL: https://github.com/fanchmwrt/fanchmwrt-snapshot
+  REPO_BRANCH: fanchmwrt-26.05
+  TARGET: qualcommax
+  SUBTARGET: ipq60xx
+  PROFILE: jdcloud_re-ss-01
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 720
+
+    steps:
+      - name: Checkout this repo (config + workflow)
+        uses: actions/checkout@v4
+        with:
+          path: build-config
+
+      - name: Free up disk space
+        run: |
+          echo "=== Before ==="
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo apt-get clean
+          echo "=== After ==="
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential ccache ecj fastjar file g++ gawk gettext git \
+            java-propose-classpath libelf-dev libncurses5-dev \
+            libncursesw5-dev libssl-dev python3 python3-distutils \
+            python3-setuptools python3-dev rsync subversion swig time \
+            unzip zlib1g-dev
+
+      - name: Clone source
+        run: |
+          df -h /
+          git clone --depth 1 --branch "${REPO_BRANCH}" "${REPO_URL}" openwrt
+          cd openwrt
+          echo "=== HEAD ==="
+          git log --oneline -1
+          echo "=== version file ==="
+          cat version 2>/dev/null || true
+          cat include/version.mk 2>/dev/null | tail -20 || true
+
+      - name: Update feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+
+      - name: Install feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds install -a
+
+      - name: Inject custom packages (arthur-nas)
+        run: |
+          # 把本仓库里的自定义包链接进源码树
+          SRC="$GITHUB_WORKSPACE/build-config/package"
+          DST="openwrt/package"
+
+          if [ -d "$SRC" ]; then
+            for pkg in "$SRC"/*; do
+              [ -d "$pkg" ] || continue
+              name=$(basename "$pkg")
+              echo "  [inject] $name"
+              rm -rf "$DST/$name"
+              cp -r "$pkg" "$DST/$name"
+            done
+            echo "=== 注入后的自定义包 ==="
+            ls -la "$DST" | grep -v '^total'
+          else
+            echo "[WARN] 未找到 $SRC，跳过"
+          fi
+
+          # 验证包被 OpenWrt 识别
+          cd openwrt
+          echo "=== 校验 arthur-nas 包定义 ==="
+          make defconfig >/dev/null 2>&1 || true
+          if grep -q 'CONFIG_PACKAGE_arthur-nas' .config; then
+            echo "  [OK] arthur-nas 已被构建系统识别"
+          else
+            echo "  [WARN] arthur-nas 未被识别，请检查 Makefile"
+          fi
+          echo "=== arthur-nas 相关配置 ==="
+          grep -E 'arthur-nas' .config || echo "  (无)"
+
+      - name: Apply custom config
+        run: |
+          cd openwrt
+          cp "$GITHUB_WORKSPACE/build-config/configs/arthur_ntfs.config" .config
+
+          echo "=== 步骤1: 生成基础配置 (defconfig) ==="
+          make defconfig
+
+          echo "=== 步骤2: 强制注入 NTFS/exFAT 选项 ==="
+          # 用 sed 先删除可能存在的旧行，避免重复
+          for opt in kmod-fs-ntfs3 kmod-fs-exfat kmod-nls-utf8 kmod-nls-cp936 arthur-nas; do
+            sed -i "/^CONFIG_PACKAGE_${opt}=/d" .config
+            sed -i "/^# CONFIG_PACKAGE_${opt} is not set/d" .config
+          done
+          {
+            echo ""
+            echo "# ===== NTFS / exFAT 支持 (本次编译的核心目的) ====="
+            echo "CONFIG_PACKAGE_kmod-fs-ntfs3=y"
+            echo "CONFIG_PACKAGE_kmod-fs-exfat=y"
+            echo "CONFIG_PACKAGE_kmod-nls-utf8=y"
+            echo "CONFIG_PACKAGE_kmod-nls-cp936=y"
+            echo "# ===== NAS 套件 ====="
+            echo "CONFIG_PACKAGE_arthur-nas=y"
+          } >> .config
+
+          echo "=== 步骤3: 再次 defconfig 解析依赖 ==="
+          make defconfig
+
+          echo "=== 步骤4: 严格校验 (缺失则立即失败) ==="
+          FAIL=0
+          for opt in CONFIG_PACKAGE_kmod-fs-ntfs3 CONFIG_PACKAGE_kmod-fs-exfat \
+                     CONFIG_PACKAGE_kmod-nls-utf8 CONFIG_PACKAGE_arthur-nas \
+                     CONFIG_PACKAGE_samba4-server; do
+            if grep -q "^${opt}=y" .config; then
+              echo "  [OK] ${opt}=y"
+            else
+              echo "  [FAIL] ${opt} 未能启用！"
+              FAIL=1
+            fi
+          done
+
+          echo "=== 目标设备校验 ==="
+          grep -E 'CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=' .config || echo "  [FAIL] 设备 profile 未选中"
+          if ! grep -q '^CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y' .config; then
+            echo "  [FAIL] jdcloud_re-ss-01 profile 未选中"
+            FAIL=1
+          fi
+
+          if [ "$FAIL" = "1" ]; then
+            echo ""
+            echo "############################################################"
+            echo "# 关键配置缺失，中止编译。"
+            echo "# 可能原因：包名有误 / feeds 未正确安装 / 源码分支不对。"
+            echo "# 请把上面的日志反馈，以便修正配置。"
+            echo "############################################################"
+            exit 1
+          fi
+
+          echo ""
+          echo "=== 所有关键选项已确认，可以开始编译 ==="
+          echo "kmod 相关配置行:"
+          grep -E 'CONFIG_PACKAGE_(kmod-fs-ntfs3|kmod-fs-exfat|kmod-nls-utf8|kmod-nls-cp936)=' .config
+
+      - name: Download package sources
+        run: |
+          cd openwrt
+          make download -j8 V=s 2>&1 | tail -30
+          # 下载失败重试一次
+          find dl -size -1024c -exec rm -f {} \; 2>/dev/null || true
+          make download -j8 V=s 2>&1 | tail -10
+
+      - name: Compile firmware
+        run: |
+          cd openwrt
+          echo "=== 开始编译 $(date) ==="
+          make -j$(nproc) V=s 2>&1 | tail -120
+          echo "=== 编译结束 $(date) ==="
+
+      - name: Show build result
+        if: always()
+        run: |
+          cd openwrt
+          echo "=== bin 目录 ==="
+          find bin/targets -type f \( -name '*.bin' -o -name '*.itb' -o -name '*.img*' \) 2>/dev/null || true
+          echo "=== 生成的 kmod 包 ==="
+          find bin -name 'kmod-fs-ntfs3*' -o -name 'kmod-fs-exfat*' -o -name 'arthur-nas*' 2>/dev/null || true
+
+      - name: Upload firmware
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fanchmwrt-arthur-ntfs-firmware
+          path: |
+            openwrt/bin/targets/qualcommax/ipq60xx/*.bin
+            openwrt/bin/targets/qualcommax/ipq60xx/*.itb
+            openwrt/bin/targets/qualcommax/ipq60xx/*.img*
+            openwrt/bin/targets/qualcommax/ipq60xx/packages/*.apk
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload kmod packages only
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kmod-ntfs-exfat
+          path: |
+            openwrt/bin/targets/qualcommax/ipq60xx/packages/kmod-fs-ntfs3*.apk
+            openwrt/bin/targets/qualcommax/ipq60xx/packages/kmod-fs-exfat*.apk
+            openwrt/bin/targets/qualcommax/ipq60xx/packages/kmod-nls-utf8*.apk
+            openwrt/bin/targets/qualcommax/ipq60xx/packages/kmod-nls-cp936*.apk
+            openwrt/bin/targets/qualcommax/ipq60xx/packages/arthur-nas*.apk
+          if-no-files-found: warn
+          retention-days: 30

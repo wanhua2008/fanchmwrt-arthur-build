@@ -1,0 +1,19 @@
+# 编译产物与临时文件
+bin/
+build_dir/
+dl/
+staging_dir/
+tmp/
+logs/
+*.log
+
+# 编辑器/系统
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# 本地凭据（切勿提交）
+mygit-config.txt
+token.txt
+.env

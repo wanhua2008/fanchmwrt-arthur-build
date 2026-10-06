@@ -1,0 +1,148 @@
+#!/bin/sh
+# ============================================================
+# arthur-nas 首次启动自动配置 (uci-defaults)
+#
+# OpenWrt 会在首次启动时自动执行本脚本，执行后自我删除。
+#
+# 本脚本的工作：
+#   1. 若 /dev/mmcblk0p27 不存在 -> 在 eMMC 空闲空间创建分区
+#   2. 若分区无文件系统       -> 格式化为 ext4
+#   3. 挂载到 /mnt/mmcblk0p27
+#   4. 写入 fstab 开机自动挂载
+#   5. 配置 Samba 共享
+#
+# 【安全性】只操作 mmcblk0 磁盘末尾的空闲空间，
+#           不触碰任何已有分区。若解析分区表失败则整体放弃。
+# ============================================================
+
+DISK="/dev/mmcblk0"
+PART="${DISK}p27"
+MNT="/mnt/mmcblk0p27"
+SHARE="share"
+
+log() { logger -t arthur-nas-setup "$*"; echo "[arthur-nas-setup] $*"; }
+
+# ---------- 0. 环境检查 ----------
+[ -b "$DISK" ] || { log "找不到 $DISK，跳过"; exit 0; }
+
+# ---------- 1. 创建分区（仅当不存在时） ----------
+if [ ! -b "$PART" ]; then
+	log "未找到 $PART，尝试在 eMMC 空闲空间创建分区"
+
+	# 确保 fdisk 可用
+	command -v fdisk >/dev/null 2>&1 || {
+		if command -v apk >/dev/null 2>&1; then
+			apk update >/dev/null 2>&1
+			apk add fdisk >/dev/null 2>&1
+		fi
+	}
+
+	if command -v fdisk >/dev/null 2>&1; then
+		TOTAL=$(cat /sys/block/mmcblk0/size 2>/dev/null)
+		# 取所有现有分区中最靠后的结束扇区
+		LAST_END=$(fdisk -l "$DISK" 2>/dev/null | \
+			awk '$1 ~ /mmcblk0p[0-9]+$/ { if ($3+0 > m) m=$3+0 } END { print m }')
+
+		if [ -n "$TOTAL" ] && [ -n "$LAST_END" ] && [ "$LAST_END" -gt 0 ]; then
+			# 新分区起始扇区（4K 对齐），结束扇区留 1MB 余量
+			FIRST=$(( ((LAST_END + 2047) / 2048) * 2048 ))
+			LAST=$((TOTAL - 2049))
+
+			if [ "$FIRST" -lt "$LAST" ]; then
+				AVAIL_MB=$(( (LAST - FIRST) / 2048 ))
+				log "将创建分区: 起始扇区 $FIRST, 结束扇区 $LAST (约 ${AVAIL_MB}MB)"
+				printf 'n\np\n%d\n%d\nw\n' "$FIRST" "$LAST" | \
+					fdisk "$DISK" >/dev/null 2>&1
+				sleep 3
+				# 重新读取分区表
+				blockdev --rereadpt "$DISK" 2>/dev/null || true
+				sleep 1
+			else
+				log "空闲空间不足，跳过分区"
+			fi
+		else
+			log "解析分区表失败，跳过分区（需手动处理）"
+		fi
+	fi
+fi
+
+# ---------- 2. 格式化（仅当无文件系统时） ----------
+NEED_FMT=1
+if [ -b "$PART" ]; then
+	if command -v blkid >/dev/null 2>&1; then
+		blkid "$PART" >/dev/null 2>&1 && NEED_FMT=0
+	fi
+
+	if [ "$NEED_FMT" = "1" ]; then
+		log "格式化 $PART 为 ext4（约 110G，需数分钟，请勿断电）"
+		command -v mkfs.ext4 >/dev/null 2>&1 || {
+			if command -v apk >/dev/null 2>&1; then
+				apk add e2fsprogs >/dev/null 2>&1
+			fi
+		}
+		if command -v mkfs.ext4 >/dev/null 2>&1; then
+			mkfs.ext4 -F -m 0 -L "$SHARE" "$PART" >/dev/null 2>&1 \
+				&& log "格式化完成" || log "格式化失败"
+		else
+			log "缺少 mkfs.ext4，跳过格式化"
+		fi
+	fi
+fi
+
+# ---------- 3. 挂载 ----------
+if [ -b "$PART" ]; then
+	mkdir -p "$MNT"
+	if ! grep -qs "^$PART " /proc/mounts; then
+		mount -t ext4 -o rw,noatime "$PART" "$MNT" 2>/dev/null \
+			|| mount "$PART" "$MNT" 2>/dev/null \
+			|| log "挂载失败"
+	fi
+	chmod 777 "$MNT" 2>/dev/null
+fi
+
+# ---------- 4. fstab 自动挂载 ----------
+if [ -b "$PART" ] && ! grep -q "$MNT" /etc/config/fstab 2>/dev/null; then
+	UUID=""
+	if command -v blkid >/dev/null 2>&1; then
+		UUID=$(blkid -o value -s UUID "$PART" 2>/dev/null)
+	fi
+	[ -n "$UUID" ] || UUID="$PART"
+
+	uci add fstab mount >/dev/null 2>&1
+	uci set fstab.@mount[-1].target="$MNT"
+	uci set fstab.@mount[-1].uuid="$UUID"
+	uci set fstab.@mount[-1].enabled='1'
+	uci commit fstab
+	log "已写入 fstab 自动挂载 (UUID=$UUID)"
+fi
+
+# ---------- 5. Samba 共享 ----------
+[ -f /etc/config/samba4 ] || touch /etc/config/samba4
+
+if ! uci -q get samba4."$SHARE" >/dev/null 2>&1; then
+	uci add samba4 sambashare >/dev/null 2>&1
+	uci rename samba4.@sambashare[-1]="$SHARE" 2>/dev/null
+	uci set samba4."$SHARE".name="$SHARE"
+	uci set samba4."$SHARE".path="$MNT"
+	uci set samba4."$SHARE".read_only='no'
+	uci set samba4."$SHARE".guest_ok='yes'
+	uci set samba4."$SHARE".create_mask='0666'
+	uci set samba4."$SHARE".dir_mask='0777'
+	uci set samba4."$SHARE".force_root='1'
+	uci commit samba4
+	log "已配置 Samba 共享: $SHARE -> $MNT"
+fi
+
+/etc/init.d/samba4 enable 2>/dev/null
+/etc/init.d/samba4 restart 2>/dev/null
+
+# ---------- 6. 启用 arthur-nas 服务 ----------
+/etc/init.d/arthur-nas enable 2>/dev/null
+
+# ---------- 7. 清理 LuCI 缓存 ----------
+rm -rf /tmp/luci-indexcache* 2>/dev/null
+/etc/init.d/rpcd restart 2>/dev/null
+
+log "自动配置完成。共享: \\\\路由器IP\\$SHARE"
+
+exit 0

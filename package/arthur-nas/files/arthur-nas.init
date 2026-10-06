@@ -1,0 +1,85 @@
+#!/bin/sh /etc/rc.common
+# ============================================================
+# arthur-nas 开机初始化
+#
+# 职责：
+#   1. 确保 eMMC 大分区 (mmcblk0p27) 已挂载
+#   2. 确保 Samba 共享配置存在（首次自动写入）
+#   3. 清理 LuCI 缓存
+#
+# 注意：不做分区/格式化（那是一次性操作，由 LuCI 页面
+#       或 arthur-nas-setup.sh 手动触发，避免开机卡住）
+# ============================================================
+
+START=95
+STOP=10
+USE_PROCD=0
+
+PART="/dev/mmcblk0p27"
+MNT="/mnt/mmcblk0p27"
+SHARE="share"
+SETUP="/usr/lib/arthur-nas/arthur-nas-setup.sh"
+FLAG="/etc/.arthur-nas-firstboot-done"
+
+log() { logger -t arthur-nas "$*"; echo "[arthur-nas] $*"; }
+
+start() {
+	log "服务启动"
+
+	# ---------- 1. 挂载 eMMC 大分区 ----------
+	if [ -b "$PART" ]; then
+		if ! grep -qs "^$PART " /proc/mounts; then
+			mkdir -p "$MNT"
+			mount -t ext4 -o rw,noatime "$PART" "$MNT" 2>/dev/null \
+				|| mount "$PART" "$MNT" 2>/dev/null \
+				|| log "警告: $PART 挂载失败（可能尚未格式化）"
+		fi
+		[ -d "$MNT" ] && chmod 777 "$MNT" 2>/dev/null
+	fi
+
+	# ---------- 2. 首次启动：写入 Samba 共享配置 ----------
+	if [ ! -f "$FLAG" ]; then
+		log "首次启动，初始化 Samba 共享配置"
+
+		# 确保 samba4 配置文件存在
+		[ -f /etc/config/samba4 ] || touch /etc/config/samba4
+
+		# 只在共享不存在时创建，避免覆盖用户改动
+		if ! uci -q get samba4."$SHARE" >/dev/null 2>&1; then
+			uci add samba4 sambashare >/dev/null 2>&1
+			uci rename samba4.@sambashare[-1]="$SHARE" 2>/dev/null
+			uci set samba4."$SHARE".name="$SHARE"
+			uci set samba4."$SHARE".path="$MNT"
+			uci set samba4."$SHARE".read_only='no'
+			uci set samba4."$SHARE".guest_ok='yes'
+			uci set samba4."$SHARE".create_mask='0666'
+			uci set samba4."$SHARE".dir_mask='0777'
+			uci set samba4."$SHARE".force_root='1'
+			uci commit samba4
+			log "已创建共享 $SHARE -> $MNT"
+		else
+			log "共享 $SHARE 已存在，跳过"
+		fi
+
+		# 启用并重启 samba
+		/etc/init.d/samba4 enable 2>/dev/null
+		/etc/init.d/samba4 restart 2>/dev/null
+
+		touch "$FLAG"
+	fi
+
+	# ---------- 3. 清理 LuCI 缓存 ----------
+	rm -rf /tmp/luci-indexcache* 2>/dev/null
+
+	log "启动完成，共享地址: \\\\路由器IP\\$SHARE"
+}
+
+stop() {
+	log "服务停止（不卸载存储，避免影响正在进行的传输）"
+}
+
+restart() {
+	stop
+	sleep 1
+	start
+}
