@@ -201,21 +201,15 @@ jobs:
             make download -j1 V=s 2>&1 | tee -a download.log | tail -40
           fi
 
-      - name: "Fail-fast: targeted compile of fwx-apps"
+      - name: Preliminary check of fwx-apps contents
         run: |
           cd openwrt
-          set -o pipefail
           echo "=== 注入的包内容抽查 ==="
           find package/fwx-apps -type f | head -20
           echo "=== fwx-apps apk 缓存数量（应为 11） ==="
           find package/fwx-apps -name '*.apk' | wc -l
-          echo "=== 前置: 构建 tools（host sed 等宿主工具）$(date) ==="
-          make tools/install -j$(nproc) 2>&1 | tee custom-pkg.log | tail -20
-          echo "=== 前置: 构建 toolchain $(date) ==="
-          make toolchain/install -j$(nproc) 2>&1 | tee -a custom-pkg.log | tail -20
-          echo "=== 定向编译 fwx-apps $(date) ==="
-          make package/fwx-apps/compile V=s 2>&1 | tee -a custom-pkg.log | tail -60
-          echo "=== fwx-apps 编译通过 $(date) ==="
+          echo "=== Makefile DEPENDS 行（库依赖必须齐全，否则 apk 打包扫描器会拒） ==="
+          grep -E 'DEPENDS|PKGARCH' package/fwx-apps/Makefile
 
       - name: Compile firmware
         run: |
@@ -229,7 +223,7 @@ jobs:
         if: failure()
         run: |
           cd openwrt
-          for f in custom-pkg.log download.log build.log; do
+          for f in download.log build.log; do
             if [ -f "$f" ]; then gzip -f "$f"; fi
           done
           ls -la *.log* 2>/dev/null || true
@@ -240,7 +234,6 @@ jobs:
         with:
           name: build-logs
           path: |
-            openwrt/custom-pkg.log.gz
             openwrt/download.log.gz
             openwrt/build.log.gz
           if-no-files-found: warn
